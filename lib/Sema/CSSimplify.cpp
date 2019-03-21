@@ -2358,7 +2358,7 @@ ConstraintSystem::matchTypes(Type type1, Type type2, ConstraintKind kind,
     }
   }
 
-  if (kind == ConstraintKind::SingleExpressionFunctionReturnConversion) {
+  if (kind >= ConstraintKind::Conversion) {
     if (type1->isUninhabited()) {
       conversionsOrFixes.push_back(ConversionRestrictionKind::UninhabitedUpcast);
     }
