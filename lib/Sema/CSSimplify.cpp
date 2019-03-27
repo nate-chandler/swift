@@ -1068,7 +1068,6 @@ ConstraintSystem::matchTupleTypes(TupleType *tuple1, TupleType *tuple2,
   case ConstraintKind::OperatorArgumentConversion:
   case ConstraintKind::ArgumentConversion:
   case ConstraintKind::Conversion:
-  case ConstraintKind::SingleExpressionFunctionReturnConversion:
     subKind = ConstraintKind::Conversion;
     break;
 
@@ -1158,7 +1157,6 @@ static bool matchFunctionRepresentations(FunctionTypeRepresentation rep1,
   case ConstraintKind::ValueMember:
   case ConstraintKind::FunctionInput:
   case ConstraintKind::FunctionResult:
-  case ConstraintKind::SingleExpressionFunctionReturnConversion:
     return false;
   }
 
@@ -1304,7 +1302,6 @@ ConstraintSystem::matchFunctionTypes(FunctionType *func1, FunctionType *func2,
   case ConstraintKind::Conversion:
   case ConstraintKind::ArgumentConversion:
   case ConstraintKind::OperatorArgumentConversion:
-  case ConstraintKind::SingleExpressionFunctionReturnConversion:
     subKind = ConstraintKind::Subtype;
     break;
 
@@ -2143,7 +2140,6 @@ ConstraintSystem::matchTypes(Type type1, Type type2, ConstraintKind kind,
     case ConstraintKind::Conversion:
     case ConstraintKind::ArgumentConversion:
     case ConstraintKind::OperatorArgumentConversion:
-    case ConstraintKind::SingleExpressionFunctionReturnConversion: 
       return formUnsolvedResult();
 
     case ConstraintKind::ApplicableFunction:
@@ -6058,7 +6054,6 @@ ConstraintSystem::addConstraintImpl(ConstraintKind kind, Type first,
   case ConstraintKind::Conversion:
   case ConstraintKind::ArgumentConversion:
   case ConstraintKind::OperatorArgumentConversion:
-  case ConstraintKind::SingleExpressionFunctionReturnConversion:
     return matchTypes(first, second, kind, subflags, locator);
 
   case ConstraintKind::BridgingConversion:
@@ -6313,8 +6308,7 @@ ConstraintSystem::simplifyConstraint(const Constraint &constraint) {
   case ConstraintKind::Subtype:
   case ConstraintKind::Conversion:
   case ConstraintKind::ArgumentConversion:
-  case ConstraintKind::OperatorArgumentConversion:
-  case ConstraintKind::SingleExpressionFunctionReturnConversion: {
+  case ConstraintKind::OperatorArgumentConversion: {
     // Relational constraints.
     auto matchKind = constraint.getKind();
 

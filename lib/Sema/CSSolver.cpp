@@ -1120,8 +1120,6 @@ ConstraintSystem::solveImpl(Expr *&expr,
     auto constraintKind = ConstraintKind::Conversion;
     if (getContextualTypePurpose() == CTP_CallArgument)
       constraintKind = ConstraintKind::ArgumentConversion;
-    else if (getContextualTypePurpose() == CTP_ReturnSingleExpr)
-      constraintKind = ConstraintKind::SingleExpressionFunctionReturnConversion;
 
     // In a by-reference yield, we expect the contextual type to be an
     // l-value type, so the result must be bound to that.
@@ -1502,8 +1500,7 @@ void ConstraintSystem::ArgumentInfoCollector::walk(Type argType) {
       case ConstraintKind::ArgumentConversion:
       case ConstraintKind::Conversion:
       case ConstraintKind::BridgingConversion:
-      case ConstraintKind::BindParam: 
-      case ConstraintKind::SingleExpressionFunctionReturnConversion: {
+      case ConstraintKind::BindParam: {
         auto secondTy = constraint->getSecondType();
         if (secondTy->is<TypeVariableType>()) {
           auto otherRep =

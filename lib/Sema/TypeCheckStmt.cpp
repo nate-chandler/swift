@@ -465,15 +465,8 @@ public:
                                        RS->isImplicit());
     }
     
-    ContextualTypePurpose ctp = CTP_ReturnStmt;
-    if (auto func = dyn_cast_or_null<FuncDecl>(TheFunc->getAbstractFunctionDecl())) {
-      if (func->hasSingleExpressionBody()) {
-        ctp = CTP_ReturnSingleExpr;
-      }
-    }
-    
     auto exprTy = TC.typeCheckExpression(E, DC, TypeLoc::withoutLoc(ResultTy),
-                                         ctp);
+                                         CTP_ReturnStmt);
     RS->setResult(E);
 
     if (!exprTy) {

@@ -65,7 +65,6 @@ Constraint::Constraint(ConstraintKind Kind, Type First, Type Second,
   case ConstraintKind::OptionalObject:
   case ConstraintKind::FunctionInput:
   case ConstraintKind::FunctionResult:
-  case ConstraintKind::SingleExpressionFunctionReturnConversion:
     assert(!First.isNull());
     assert(!Second.isNull());
     break;
@@ -133,7 +132,6 @@ Constraint::Constraint(ConstraintKind Kind, Type First, Type Second, Type Third,
   case ConstraintKind::Disjunction:
   case ConstraintKind::FunctionInput:
   case ConstraintKind::FunctionResult:
-  case ConstraintKind::SingleExpressionFunctionReturnConversion:
     llvm_unreachable("Wrong constructor");
 
   case ConstraintKind::KeyPath:
@@ -236,7 +234,6 @@ Constraint *Constraint::clone(ConstraintSystem &cs) const {
   case ConstraintKind::Defaultable:
   case ConstraintKind::FunctionInput:
   case ConstraintKind::FunctionResult:
-  case ConstraintKind::SingleExpressionFunctionReturnConversion:
     return create(cs, getKind(), getFirstType(), getSecondType(), getLocator());
 
   case ConstraintKind::BindOverload:
@@ -329,8 +326,6 @@ void Constraint::print(llvm::raw_ostream &Out, SourceManager *sm) const {
     Out << " bind function input of "; break;
   case ConstraintKind::FunctionResult:
     Out << " bind function result of "; break;
-  case ConstraintKind::SingleExpressionFunctionReturnConversion:
-    Out << " single expression function return of "; break;
   case ConstraintKind::BindOverload: {
     Out << " bound to ";
     auto overload = getOverloadChoice();
@@ -518,7 +513,6 @@ gatherReferencedTypeVars(Constraint *constraint,
   case ConstraintKind::SelfObjectOfProtocol:
   case ConstraintKind::FunctionInput:
   case ConstraintKind::FunctionResult:
-  case ConstraintKind::SingleExpressionFunctionReturnConversion:
     constraint->getFirstType()->getTypeVariables(typeVars);
     constraint->getSecondType()->getTypeVariables(typeVars);
     break;
