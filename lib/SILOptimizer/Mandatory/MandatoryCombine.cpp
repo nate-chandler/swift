@@ -25,6 +25,7 @@
 //===----------------------------------------------------------------------===//
 
 #define DEBUG_TYPE "sil-mandatory-combiner"
+#include "../SILCombiner/SILCombiner.h"
 #include "swift/SIL/SILVisitor.h"
 #include "swift/SILOptimizer/PassManager/Passes.h"
 #include "swift/SILOptimizer/PassManager/Transforms.h"
@@ -34,124 +35,41 @@
 #include <algorithm>
 #include <vector>
 
+#define LLVM_DEBUG(STUFF) STUFF
+
 using namespace swift;
+
+STATISTIC(numCombinedMandatory, "Number of instructions mandatorily combined");
 
 namespace {
 
+using Callback = std::function<void(void)>;
+Callback makeDefaultCallback() {
+  return [] {};
+};
+
 class MandatoryCombiner final
-    : public SILInstructionVisitor<MandatoryCombiner, void> {
-
-  class Worklist {
-    llvm::SmallVector<SILInstruction *, 256> worklist;
-    llvm::DenseMap<SILInstruction *, unsigned> worklistMap;
-
-    void operator=(const class worklist &RHS) = delete;
-    Worklist(const class Worklist &Worklist) = delete;
-
-  public:
-    Worklist() {}
-
-    /// Returns true if the worklist is empty.
-    bool isEmpty() const { return worklist.empty(); }
-
-    /// Add the specified instruction to the worklist if it isn't already in it.
-    void add(SILInstruction *I) {
-      if (!worklistMap.insert(std::make_pair(I, worklist.size())).second)
-        return;
-
-      LLVM_DEBUG(llvm::dbgs() << "SC: ADD: " << *I << '\n');
-      worklist.push_back(I);
-    }
-
-    /// If the given ValueBase is a SILInstruction add it to the worklist.
-    void addValue(ValueBase *V) {
-      if (auto *I = V->getDefiningInstruction())
-        add(I);
-    }
-
-    /// Add the given list of instructions in reverse order to the worklist.
-    /// This routine assumes that the worklist is empty and the given list has
-    /// no duplicates.
-    void addInitialGroup(ArrayRef<SILInstruction *> List) {
-      assert(worklist.empty() && "Worklist must be empty to add initial group");
-      worklist.reserve(List.size() + 16);
-      worklistMap.reserve(List.size());
-      LLVM_DEBUG(llvm::dbgs()
-                 << "SC: ADDING: " << List.size() << " instrs to worklist\n");
-      while (!List.empty()) {
-        SILInstruction *I = List.back();
-        List = List.slice(0, List.size() - 1);
-        worklistMap.insert(std::make_pair(I, worklist.size()));
-        worklist.push_back(I);
-      }
-    }
-
-    // If I is in the worklist, remove it.
-    void remove(SILInstruction *I) {
-      auto It = worklistMap.find(I);
-      if (It == worklistMap.end())
-        return; // Not in worklist.
-
-      // Don't bother moving everything down, just null out the slot. We will
-      // check before we process any instruction if it is null.
-      worklist[It->second] = nullptr;
-      worklistMap.erase(It);
-    }
-
-    /// Remove the top element from the worklist.
-    SILInstruction *removeOne() {
-      SILInstruction *I = worklist.pop_back_val();
-      worklistMap.erase(I);
-      return I;
-    }
-
-    /// When an instruction has been simplified, add all of its users to the
-    /// worklist, since additional simplifications of its users may have been
-    /// exposed.
-    void addUsersToWorklist(ValueBase *I) {
-      for (auto UI : I->getUses())
-        add(UI->getUser());
-    }
-
-    void addUsersToWorklist(SILValue value) {
-      for (auto *use : value->getUses())
-        add(use->getUser());
-    }
-
-    /// When an instruction has been simplified, add all of its users to the
-    /// worklist, since additional simplifications of its users may have been
-    /// exposed.
-    void addUsersOfAllResultsToWorklist(SILInstruction *I) {
-      for (auto result : I->getResults()) {
-        addUsersToWorklist(result);
-      }
-    }
-
-    /// Check that the worklist is empty and nuke the backing store for the map
-    /// if it is large.
-    void zap() {
-      assert(worklistMap.empty() && "Worklist empty, but the map is not?");
-
-      // Do an explicit clear, this shrinks the map if needed.
-      worklistMap.clear();
-    }
-  };
+    : public SILInstructionVisitor<MandatoryCombiner,
+                                   std::pair<SILInstruction *, Callback>> {
 
   bool madeChange;
   unsigned iteration;
   InstModCallbacks instModCallbacks;
-  Worklist worklist;
+  SILCombineWorklist worklist;
+  llvm::SmallVectorImpl<SILInstruction *> &createdInstructions;
+  llvm::SmallVector<SILInstruction *, 16> instructionsPendingDeletion;
 
 public:
-  MandatoryCombiner()
+  MandatoryCombiner(
+      llvm::SmallVectorImpl<SILInstruction *> &createdInstructions)
       : madeChange(false), iteration(0),
         instModCallbacks(
             [&](SILInstruction *instruction) {
               worklist.remove(instruction);
-              instruction->eraseFromParent();
+              instructionsPendingDeletion.push_back(instruction);
             },
             [&](SILInstruction *instruction) { worklist.add(instruction); }),
-        worklist(){};
+        worklist(), createdInstructions(createdInstructions){};
 
   /// \returns whether all the values are of trivial type in the provided
   ///          function.
@@ -162,42 +80,113 @@ public:
     });
   }
 
-  void beforeVisit(SILInstruction *inst) {
-    //    llvm::dbgs() << "visiting instruction" << *inst << "\n";
-    llvm::dbgs() << "visiting instruction of kind " << (int)inst->getKind()
-                 << "\n";
+  /// Replace all of the results of the old instruction with the
+  /// corresponding results of the new instruction.
+  void replaceInstUsesPairwiseWith(SILInstruction *oldInstruction,
+                                   SILInstruction *newInstruction) {
+    LLVM_DEBUG(llvm::dbgs() << "MC: Replacing " << *oldInstruction << "\n"
+                            << "    with " << *newInstruction << '\n');
+
+    auto oldResults = oldInstruction->getResults();
+    auto newResults = newInstruction->getResults();
+    assert(oldResults.size() == newResults.size());
+    for (auto i : indices(oldResults)) {
+      // Add all modified instrs to worklist.
+      worklist.addUsersToWorklist(oldResults[i]);
+
+      oldResults[i]->replaceAllUsesWith(newResults[i]);
+    }
+  }
+
+  void eraseInstFromFunction(SILInstruction &instruction,
+                             bool addOperandsToWorklist = true) {
+    SILBasicBlock::iterator nullIter;
+    return eraseInstFromFunction(instruction, nullIter, addOperandsToWorklist);
+  }
+
+  // Some instructions can never be "trivially dead" due to side effects or
+  // producing a void value. In those cases, since we cannot rely on
+  // SILCombines trivially dead instruction DCE in order to delete the
+  // instruction, visit methods should use this method to delete the given
+  // instruction and upon completion of their peephole return the value returned
+  // by this method.
+  void eraseInstFromFunction(SILInstruction &instruction,
+                             SILBasicBlock::iterator &instIter,
+                             bool addOperandsToWorklist = true) {
+    // Delete any debug users first.
+    for (auto result : instruction.getResults()) {
+      while (!result->use_empty()) {
+        auto *user = result->use_begin()->getUser();
+        assert(user->isDebugInstruction());
+        if (instIter == user->getIterator())
+          ++instIter;
+        worklist.remove(user);
+        user->eraseFromParent();
+      }
+    }
+    if (instIter == instruction.getIterator())
+      ++instIter;
+
+    eraseSingleInstFromFunction(instruction, addOperandsToWorklist);
+    madeChange = true;
+  }
+
+  void eraseSingleInstFromFunction(SILInstruction &instruction,
+                                   bool addOperandsToWorklist = true) {
+    LLVM_DEBUG(llvm::dbgs() << "MC: ERASE " << instruction << '\n');
+
+    assert(!instruction.hasUsesOfAnyResult() &&
+           "Cannot erase instruction that is used!");
+
+    // Make sure that we reprocess all operands now that we reduced their
+    // use counts.
+    if (instruction.getNumOperands() < 8 && addOperandsToWorklist) {
+      for (auto &operand : instruction.getAllOperands()) {
+        if (auto *op = operand.get()->getDefiningInstruction()) {
+          LLVM_DEBUG(llvm::dbgs() << "MC: add op " << *op
+                                  << " from erased inst to worklist\n");
+          worklist.add(op);
+        }
+      }
+    }
+    worklist.remove(&instruction);
+    instruction.eraseFromParent();
   }
 
   /// Base visitor that does not do anything.
-  void visitSILInstruction(SILInstruction *) {}
+  std::pair<SILInstruction *, Callback> visitSILInstruction(SILInstruction *) {
+    return {nullptr, makeDefaultCallback()};
+  }
 
-  void visitApplyInst(ApplyInst *instruction) {
+  std::pair<SILInstruction *, Callback> visitApplyInst(ApplyInst *instruction) {
+    std::pair<SILInstruction *, Callback> defaultReturn = {
+        nullptr, makeDefaultCallback()};
     // Apply this pass only to partial applies all of whose arguments are
     // trivial.
     auto calledValue = instruction->getCalleeOrigin();
     if (calledValue == nullptr) {
-      return;
+      return defaultReturn;
     }
     auto fullApplyCallee = calledValue->getDefiningInstruction();
     if (fullApplyCallee == nullptr) {
-      return;
+      return defaultReturn;
     }
     auto partialApply = dyn_cast<PartialApplyInst>(fullApplyCallee);
     if (partialApply == nullptr) {
-      return;
+      return defaultReturn;
     }
     auto *function = partialApply->getCalleeFunction();
     if (function == nullptr) {
-      return;
+      return defaultReturn;
     }
     ApplySite fullApplySite(instruction);
     auto fullApplyArguments = fullApplySite.getArguments();
     if (!areAllValuesTrivial(fullApplyArguments, *function)) {
-      return;
+      return defaultReturn;
     }
     auto partialApplyArguments = ApplySite(partialApply).getArguments();
     if (!areAllValuesTrivial(partialApplyArguments, *function)) {
-      return;
+      return defaultReturn;
     }
 
     auto callee = partialApply->getCallee();
@@ -208,23 +197,22 @@ public:
     llvm::copy(partialApplyArguments, std::back_inserter(argsVec));
     llvm::copy(fullApplyArguments, std::back_inserter(argsVec));
 
-    SILBuilderWithScope builder(instruction);
+    SILBuilderWithScope builder(instruction, &createdInstructions);
     ApplyInst *replacement = builder.createApply(
         /*Loc=*/instruction->getDebugLocation().getLocation(), /*Fn=*/callee,
         /*Subs=*/partialApply->getSubstitutionMap(),
         /*Args*/ argsVec,
         /*isNonThrowing=*/instruction->isNonThrowing(),
         /*SpecializationInfo=*/partialApply->getSpecializationInfo());
-    instruction->replaceAllUsesWith(replacement);
-    instruction->eraseFromParent();
-    worklist.remove(instruction);
-    worklist.add(replacement);
 
-    bool deletedDeadClosure =
-        tryDeleteDeadClosure(partialApply, instModCallbacks);
-    if (deletedDeadClosure) {
-      madeChange = true;
-    }
+    LLVM_DEBUG(llvm::dbgs() << "MC: WILL SOONN ATTEMPT DELETE DEAD CLOSURE\n"
+                            << *partialApply;)
+    return {replacement, [this, partialApply] {
+              LLVM_DEBUG(llvm::dbgs() << "MC: ATTEMPTING DELETE DEAD CLOSURE\n"
+                                      << *partialApply;)
+              auto success =
+                  tryDeleteDeadClosure(partialApply, this->instModCallbacks);
+            }};
   }
 
   void addReachableCodeToWorklist(SILFunction &function) {
@@ -251,7 +239,65 @@ public:
         continue;
       }
 
-      visit(instruction);
+#ifndef NDEBUG
+      std::string instructionDescription;
+#endif
+      LLVM_DEBUG(llvm::raw_string_ostream stream(instructionDescription);
+                 instruction->print(stream);
+                 instructionDescription = stream.str(););
+      LLVM_DEBUG(llvm::dbgs() << "MC: Visiting: " << instruction << '\n');
+
+      auto replacementAndCallback = visit(instruction);
+      auto replacement = replacementAndCallback.first;
+      auto callback = replacementAndCallback.second;
+      if (replacement) {
+        ++numCombinedMandatory;
+        if (replacement != instruction) {
+          assert(
+              &*std::prev(SILBasicBlock::iterator(instruction)) ==
+                  replacement &&
+              "Expected new instruction inserted before existing instruction!");
+
+          LLVM_DEBUG(llvm::dbgs() << "MC: Old = " << *instruction << '\n'
+                                  << "    New = " << *replacement << '\n');
+
+          replaceInstUsesPairwiseWith(instruction, replacement);
+          worklist.add(replacement);
+          worklist.addUsersOfAllResultsToWorklist(replacement);
+
+          eraseInstFromFunction(*instruction);
+          callback();
+        } else {
+          LLVM_DEBUG(llvm::dbgs()
+                     << "MC: Mod = " << instructionDescription << '\n'
+                     << "    New = " << *replacement << '\n');
+
+          // If the instruction was modified, it's possible that it is now dead.
+          // if so, remove it.
+          if (isInstructionTriviallyDead(instruction)) {
+            eraseInstFromFunction(*instruction);
+            callback();
+          } else {
+            worklist.add(replacement);
+            worklist.addUsersOfAllResultsToWorklist(replacement);
+          }
+        }
+        for (SILInstruction *instruction : instructionsPendingDeletion) {
+          eraseSingleInstFromFunction(*instruction);
+        }
+        instructionsPendingDeletion.clear();
+      }
+
+      // Our tracking list has been accumulating instructions created by the
+      // SILBuilder during this iteration. Go through the tracking list and add
+      // its contents to the worklist and then clear said list in preparation
+      // for the next iteration.
+      for (SILInstruction *instruction : createdInstructions) {
+        LLVM_DEBUG(llvm::dbgs() << "MC: add " << *instruction
+                                << " from tracking list to worklist\n");
+        worklist.add(instruction);
+      }
+      createdInstructions.clear();
     }
 
     worklist.zap();
@@ -283,17 +329,37 @@ public:
 
 namespace {
 
-struct MandatoryCombine : SILFunctionTransform {
+class MandatoryCombine final : public SILFunctionTransform {
+
+  llvm::SmallVector<SILInstruction *, 64> createdInstructions;
+
   void run() override {
     auto *function = getFunction();
 
-    MandatoryCombiner combiner;
+    MandatoryCombiner combiner(createdInstructions);
     bool madeChange = combiner.runOnFunction(*function);
 
     if (madeChange) {
       invalidateAnalysis(SILAnalysis::InvalidationKind::Instructions);
     }
   }
+
+  void handleDeleteNotification(SILNode *node) override {
+    auto instruction = dyn_cast<SILInstruction>(node);
+    if (instruction == nullptr) {
+      return;
+    }
+
+    // Linear searching the tracking list doesn't hurt because usually it only
+    // contains a few elements.
+    auto iterator = std::find(createdInstructions.begin(),
+                              createdInstructions.end(), instruction);
+    if (iterator != createdInstructions.end()) {
+      createdInstructions.erase(iterator);
+    }
+  }
+
+  bool needsNotifications() override { return true; }
 };
 
 } // end anonymous namespace
