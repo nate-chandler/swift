@@ -35,27 +35,16 @@
 #include <algorithm>
 #include <vector>
 
-#define LLVM_DEBUG(STUFF) STUFF
-
 using namespace swift;
-
-STATISTIC(numCombinedMandatory, "Number of instructions mandatorily combined");
 
 namespace {
 
-using Callback = std::function<void(void)>;
-Callback makeDefaultCallback() {
-  return [] {};
-};
-
-class MandatoryCombiner final
-    : public SILInstructionVisitor<MandatoryCombiner,
-                                   std::pair<SILInstruction *, Callback>> {
+class MandatoryCombiner final : public CombinerBase<MandatoryCombiner, SILInstruction *> {
 
   bool madeChange;
   unsigned iteration;
   InstModCallbacks instModCallbacks;
-  SILCombineWorklist worklist;
+  CombinerWorklist worklist;
   llvm::SmallVectorImpl<SILInstruction *> &createdInstructions;
   llvm::SmallVector<SILInstruction *, 16> instructionsPendingDeletion;
 
@@ -80,113 +69,38 @@ public:
     });
   }
 
-  /// Replace all of the results of the old instruction with the
-  /// corresponding results of the new instruction.
-  void replaceInstUsesPairwiseWith(SILInstruction *oldInstruction,
-                                   SILInstruction *newInstruction) {
-    LLVM_DEBUG(llvm::dbgs() << "MC: Replacing " << *oldInstruction << "\n"
-                            << "    with " << *newInstruction << '\n');
-
-    auto oldResults = oldInstruction->getResults();
-    auto newResults = newInstruction->getResults();
-    assert(oldResults.size() == newResults.size());
-    for (auto i : indices(oldResults)) {
-      // Add all modified instrs to worklist.
-      worklist.addUsersToWorklist(oldResults[i]);
-
-      oldResults[i]->replaceAllUsesWith(newResults[i]);
-    }
-  }
-
-  void eraseInstFromFunction(SILInstruction &instruction,
-                             bool addOperandsToWorklist = true) {
-    SILBasicBlock::iterator nullIter;
-    return eraseInstFromFunction(instruction, nullIter, addOperandsToWorklist);
-  }
-
-  // Some instructions can never be "trivially dead" due to side effects or
-  // producing a void value. In those cases, since we cannot rely on
-  // SILCombines trivially dead instruction DCE in order to delete the
-  // instruction, visit methods should use this method to delete the given
-  // instruction and upon completion of their peephole return the value returned
-  // by this method.
-  void eraseInstFromFunction(SILInstruction &instruction,
-                             SILBasicBlock::iterator &instIter,
-                             bool addOperandsToWorklist = true) {
-    // Delete any debug users first.
-    for (auto result : instruction.getResults()) {
-      while (!result->use_empty()) {
-        auto *user = result->use_begin()->getUser();
-        assert(user->isDebugInstruction());
-        if (instIter == user->getIterator())
-          ++instIter;
-        worklist.remove(user);
-        user->eraseFromParent();
-      }
-    }
-    if (instIter == instruction.getIterator())
-      ++instIter;
-
-    eraseSingleInstFromFunction(instruction, addOperandsToWorklist);
-    madeChange = true;
-  }
-
-  void eraseSingleInstFromFunction(SILInstruction &instruction,
-                                   bool addOperandsToWorklist = true) {
-    LLVM_DEBUG(llvm::dbgs() << "MC: ERASE " << instruction << '\n');
-
-    assert(!instruction.hasUsesOfAnyResult() &&
-           "Cannot erase instruction that is used!");
-
-    // Make sure that we reprocess all operands now that we reduced their
-    // use counts.
-    if (instruction.getNumOperands() < 8 && addOperandsToWorklist) {
-      for (auto &operand : instruction.getAllOperands()) {
-        if (auto *op = operand.get()->getDefiningInstruction()) {
-          LLVM_DEBUG(llvm::dbgs() << "MC: add op " << *op
-                                  << " from erased inst to worklist\n");
-          worklist.add(op);
-        }
-      }
-    }
-    worklist.remove(&instruction);
-    instruction.eraseFromParent();
-  }
-
   /// Base visitor that does not do anything.
-  std::pair<SILInstruction *, Callback> visitSILInstruction(SILInstruction *) {
-    return {nullptr, makeDefaultCallback()};
+  SILInstruction *visitSILInstruction(SILInstruction *) {
+    return nullptr;
   }
 
-  std::pair<SILInstruction *, Callback> visitApplyInst(ApplyInst *instruction) {
-    std::pair<SILInstruction *, Callback> defaultReturn = {
-        nullptr, makeDefaultCallback()};
+  SILInstruction *visitApplyInst(ApplyInst *instruction) {
     // Apply this pass only to partial applies all of whose arguments are
     // trivial.
     auto calledValue = instruction->getCalleeOrigin();
     if (calledValue == nullptr) {
-      return defaultReturn;
+      return nullptr;
     }
     auto fullApplyCallee = calledValue->getDefiningInstruction();
     if (fullApplyCallee == nullptr) {
-      return defaultReturn;
+      return nullptr;
     }
     auto partialApply = dyn_cast<PartialApplyInst>(fullApplyCallee);
     if (partialApply == nullptr) {
-      return defaultReturn;
+      return nullptr;
     }
     auto *function = partialApply->getCalleeFunction();
     if (function == nullptr) {
-      return defaultReturn;
+      return nullptr;
     }
     ApplySite fullApplySite(instruction);
     auto fullApplyArguments = fullApplySite.getArguments();
     if (!areAllValuesTrivial(fullApplyArguments, *function)) {
-      return defaultReturn;
+      return nullptr;
     }
     auto partialApplyArguments = ApplySite(partialApply).getArguments();
     if (!areAllValuesTrivial(partialApplyArguments, *function)) {
-      return defaultReturn;
+      return nullptr;
     }
 
     auto callee = partialApply->getCallee();
@@ -205,14 +119,9 @@ public:
         /*isNonThrowing=*/instruction->isNonThrowing(),
         /*SpecializationInfo=*/partialApply->getSpecializationInfo());
 
-    LLVM_DEBUG(llvm::dbgs() << "MC: WILL SOONN ATTEMPT DELETE DEAD CLOSURE\n"
-                            << *partialApply;)
-    return {replacement, [this, partialApply] {
-              LLVM_DEBUG(llvm::dbgs() << "MC: ATTEMPTING DELETE DEAD CLOSURE\n"
-                                      << *partialApply;)
-              auto success =
-                  tryDeleteDeadClosure(partialApply, this->instModCallbacks);
-            }};
+    replaceInstructionWithVisitResult(instruction, *replacement, /*instructionDescription*/nullptr);
+    tryDeleteDeadClosure(partialApply, instModCallbacks);
+    return nullptr;
   }
 
   void addReachableCodeToWorklist(SILFunction &function) {
@@ -239,54 +148,12 @@ public:
         continue;
       }
 
-#ifndef NDEBUG
-      std::string instructionDescription;
-#endif
-      LLVM_DEBUG(llvm::raw_string_ostream stream(instructionDescription);
-                 instruction->print(stream);
-                 instructionDescription = stream.str(););
-      LLVM_DEBUG(llvm::dbgs() << "MC: Visiting: " << instruction << '\n');
+      visitInstruction(instruction);
 
-      auto replacementAndCallback = visit(instruction);
-      auto replacement = replacementAndCallback.first;
-      auto callback = replacementAndCallback.second;
-      if (replacement) {
-        ++numCombinedMandatory;
-        if (replacement != instruction) {
-          assert(
-              &*std::prev(SILBasicBlock::iterator(instruction)) ==
-                  replacement &&
-              "Expected new instruction inserted before existing instruction!");
-
-          LLVM_DEBUG(llvm::dbgs() << "MC: Old = " << *instruction << '\n'
-                                  << "    New = " << *replacement << '\n');
-
-          replaceInstUsesPairwiseWith(instruction, replacement);
-          worklist.add(replacement);
-          worklist.addUsersOfAllResultsToWorklist(replacement);
-
-          eraseInstFromFunction(*instruction);
-          callback();
-        } else {
-          LLVM_DEBUG(llvm::dbgs()
-                     << "MC: Mod = " << instructionDescription << '\n'
-                     << "    New = " << *replacement << '\n');
-
-          // If the instruction was modified, it's possible that it is now dead.
-          // if so, remove it.
-          if (isInstructionTriviallyDead(instruction)) {
-            eraseInstFromFunction(*instruction);
-            callback();
-          } else {
-            worklist.add(replacement);
-            worklist.addUsersOfAllResultsToWorklist(replacement);
-          }
-        }
-        for (SILInstruction *instruction : instructionsPendingDeletion) {
-          eraseSingleInstFromFunction(*instruction);
-        }
-        instructionsPendingDeletion.clear();
+      for (SILInstruction *instruction : instructionsPendingDeletion) {
+        eraseInstFromFunction(*instruction);
       }
+      instructionsPendingDeletion.clear();
 
       // Our tracking list has been accumulating instructions created by the
       // SILBuilder during this iteration. Go through the tracking list and add

@@ -3,6 +3,7 @@ silopt_register_sources(
   CanonicalizeInstruction.cpp
   CastOptimizer.cpp
   CheckedCastBrJumpThreading.cpp
+  CombinerBase.cpp
   ConstantFolding.cpp
   ConstExpr.cpp
   Devirtualize.cpp

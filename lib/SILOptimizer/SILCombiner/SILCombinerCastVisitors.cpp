@@ -297,7 +297,7 @@ SILInstruction *
 SILCombiner::
 visitUnconditionalCheckedCastAddrInst(UnconditionalCheckedCastAddrInst *UCCAI) {
   if (CastOpt.optimizeUnconditionalCheckedCastAddrInst(UCCAI))
-    MadeChange = true;
+    madeChange = true;
 
   return nullptr;
 }
@@ -306,7 +306,7 @@ SILInstruction *
 SILCombiner::
 visitUnconditionalCheckedCastInst(UnconditionalCheckedCastInst *UCCI) {
   if (CastOpt.optimizeUnconditionalCheckedCastInst(UCCI)) {
-    MadeChange = true;
+    madeChange = true;
     return nullptr;
   }
   // FIXME: rename from RemoveCondFails to RemoveRuntimeAsserts.
@@ -410,7 +410,7 @@ SILCombiner::visitThickToObjCMetatypeInst(ThickToObjCMetatypeInst *TTOCMI) {
   // (thick_to_objc_metatype (existential_metatype @thick)) ->
   // (existential_metatype @objc_metatype)
   if (CastOpt.optimizeMetatypeConversion(TTOCMI, MetatypeRepresentation::Thick))
-    MadeChange = true;
+    madeChange = true;
 
   return nullptr;
 }
@@ -427,7 +427,7 @@ SILCombiner::visitObjCToThickMetatypeInst(ObjCToThickMetatypeInst *OCTTMI) {
   // (objc_to_thick_metatype (existential_metatype @objc_metatype)) ->
   // (existential_metatype @thick)
   if (CastOpt.optimizeMetatypeConversion(OCTTMI, MetatypeRepresentation::ObjC))
-    MadeChange = true;
+    madeChange = true;
 
   return nullptr;
 }
@@ -435,7 +435,7 @@ SILCombiner::visitObjCToThickMetatypeInst(ObjCToThickMetatypeInst *OCTTMI) {
 SILInstruction *
 SILCombiner::visitCheckedCastBranchInst(CheckedCastBranchInst *CBI) {
   if (CastOpt.optimizeCheckedCastBranchInst(CBI))
-    MadeChange = true;
+    madeChange = true;
 
   return nullptr;
 }
@@ -444,7 +444,7 @@ SILInstruction *
 SILCombiner::
 visitCheckedCastAddrBranchInst(CheckedCastAddrBranchInst *CCABI) {
   if (CastOpt.optimizeCheckedCastAddrBranchInst(CCABI))
-    MadeChange = true;
+    madeChange = true;
 
   return nullptr;
 }

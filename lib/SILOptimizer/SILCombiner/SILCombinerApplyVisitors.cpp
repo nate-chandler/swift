@@ -110,7 +110,7 @@ SILInstruction *SILCombiner::visitPartialApplyInst(PartialApplyInst *PAI) {
                [this](SILInstruction *DeadInst) {
                  eraseInstFromFunction(*DeadInst);
                },
-               [this](SILInstruction *NewInst) { Worklist.add(NewInst); }));
+               [this](SILInstruction *NewInst) { worklist.add(NewInst); }));
   return nullptr;
 }
 
