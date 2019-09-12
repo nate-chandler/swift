@@ -61,6 +61,12 @@ constants.""")
         help="Apply the replacements to the input and print the result "
              "to standard output",
         action="store_true")
+    parser.add_argument(
+        "--route-input-through-temporary-file",
+        help="Rather than piping the input directly to FileCheck, save "
+             "it to disk and feed the file to FileCheck.",
+        action="store_true"
+    )
 
     args, unknown_args = parser.parse_known_args()
 
@@ -87,9 +93,18 @@ constants.""")
         print(stdin)
         return 0
     else:
-        p = subprocess.Popen(
-            [args.file_check_path] + unknown_args, stdin=subprocess.PIPE)
-        stdout, stderr = p.communicate(stdin)
+        if args.route_input_through_temporary_file:
+            path = '/tmp/input'
+            temporary_file = open(path, 'w')
+            temporary_file.write(stdin)
+            temporary_file.close()
+            p = subprocess.Popen(
+                [args.file_check_path, "-input-file=%s" %(path) ] + unknown_args, stdin=subprocess.PIPE)
+            stdout, stderr = p.communicate()
+        else:
+            p = subprocess.Popen(
+                [args.file_check_path] + unknown_args, stdin=subprocess.PIPE)
+            stdout, stderr = p.communicate(stdin)
         if stdout is not None:
             print(stdout)
         if stderr is not None:
