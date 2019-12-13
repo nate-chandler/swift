@@ -1861,7 +1861,21 @@ void irgen::emitLazyMetadataAccessor(IRGenModule &IGM,
 
 void irgen::emitLazySpecializedGenericTypeMetadata(IRGenModule &IGM,
                                                    CanType type) {
-  emitSpecializedGenericStructMetadata(IGM, type);
+  switch (type->getKind()) {
+  case TypeKind::Struct:
+  case TypeKind::BoundGenericStruct:
+    emitSpecializedGenericStructMetadata(IGM, type,
+                                         *type.getStructOrBoundGenericStruct());
+    break;
+  case TypeKind::Enum:
+  case TypeKind::BoundGenericEnum:
+    emitSpecializedGenericEnumMetadata(IGM, type,
+                                       *type.getEnumOrBoundGenericEnum());
+    break;
+  default:
+    llvm_unreachable("Cannot statically specialize types of kind other than "
+                     "struct and enum.");
+  }
 }
 
 llvm::Constant *
@@ -3474,8 +3488,12 @@ namespace {
          : public ValueMetadataBuilderBase<StructMetadataVisitor<Impl>> {
     using super = ValueMetadataBuilderBase<StructMetadataVisitor<Impl>>;
 
+    bool HasUnfilledFieldOffset = false;
+
   protected:
-    ConstantStructBuilder &B;
+    using ConstantBuilder = ConstantStructBuilder;
+    ConstantBuilder &B;
+    using NominalDecl = StructDecl;
     using super::IGM;
     using super::Target;
     using super::asImpl;
@@ -3564,16 +3582,6 @@ namespace {
 
       return flags;
     }
-  };
-
-  class StructMetadataBuilder :
-    public StructMetadataBuilderBase<StructMetadataBuilder> {
-
-    bool HasUnfilledFieldOffset = false;
-  public:
-    StructMetadataBuilder(IRGenModule &IGM, StructDecl *theStruct,
-                          ConstantStructBuilder &B)
-      : StructMetadataBuilderBase(IGM, theStruct, B) {}
 
     void flagUnfilledFieldOffset() {
       HasUnfilledFieldOffset = true;
@@ -3582,13 +3590,21 @@ namespace {
     bool canBeConstant() {
       return !HasUnfilledFieldOffset;
     }
+  };
+
+  class StructMetadataBuilder
+      : public StructMetadataBuilderBase<StructMetadataBuilder> {
+  public:
+    StructMetadataBuilder(IRGenModule &IGM, StructDecl *theStruct,
+                          ConstantStructBuilder &B)
+        : StructMetadataBuilderBase(IGM, theStruct, B) {}
 
     void createMetadataAccessFunction() {
       createNonGenericMetadataAccessFunction(IGM, Target);
       maybeCreateSingletonMetadataInitialization();
     }
   };
-  
+
   /// Emit a value witness table for a fixed-layout generic type, or a template
   /// if the value witness table is dependent on generic parameters.
   static ConstantReference
@@ -3712,24 +3728,25 @@ namespace {
     }
   };
 
-  class SpecializedGenericStructMetadataBuilder
-      : public StructMetadataBuilderBase<
-            SpecializedGenericStructMetadataBuilder> {
-    using super =
-        StructMetadataBuilderBase<SpecializedGenericStructMetadataBuilder>;
+  template <template <typename> class MetadataBuilderBase, typename Impl>
+  class SpecializedGenericNominalMetadataBuilderBase
+      : public MetadataBuilderBase<Impl> {
+    using super = MetadataBuilderBase<Impl>;
+
     CanType type;
-    bool HasUnfilledFieldOffset = false;
 
   protected:
     using super::asImpl;
     using super::getLoweredType;
     using super::IGM;
     using super::Target;
+    using typename super::ConstantBuilder;
+    using typename super::NominalDecl;
 
   public:
-    SpecializedGenericStructMetadataBuilder(IRGenModule &IGM, CanType type,
-                                            StructDecl &decl,
-                                            ConstantStructBuilder &B)
+    SpecializedGenericNominalMetadataBuilderBase(IRGenModule &IGM, CanType type,
+                                                 NominalDecl &decl,
+                                                 ConstantBuilder &B)
         : super(IGM, &decl, B), type(type) {}
 
     void noteStartOfTypeSpecificMembers() {}
@@ -3752,7 +3769,7 @@ namespace {
       auto t = requirement.TypeParameter.subst(genericSubstitutions());
       ConstantReference ref = IGM.getAddrOfTypeMetadata(
           CanType(t), SymbolReferenceKind::Relative_Direct);
-      B.add(ref.getDirectValue());
+      this->B.add(ref.getDirectValue());
     }
 
     void addGenericWitnessTable(GenericRequirement requirement) {
@@ -3775,7 +3792,7 @@ namespace {
         addr = IGM.getAddrOfWitnessTable(rootConformance);
       }
 
-      B.add(addr);
+      this->B.add(addr);
     }
 
     SubstitutionMap genericSubstitutions() {
@@ -3791,10 +3808,20 @@ namespace {
 
       return flags;
     }
+  };
 
-    void flagUnfilledFieldOffset() { HasUnfilledFieldOffset = true; }
+  class SpecializedGenericStructMetadataBuilder
+      : public SpecializedGenericNominalMetadataBuilderBase<
+            StructMetadataBuilderBase,
+            SpecializedGenericStructMetadataBuilder> {
+    using super = SpecializedGenericNominalMetadataBuilderBase<
+        StructMetadataBuilderBase, SpecializedGenericStructMetadataBuilder>;
 
-    bool canBeConstant() { return !HasUnfilledFieldOffset; }
+  public:
+    SpecializedGenericStructMetadataBuilder(IRGenModule &IGM, CanType type,
+                                            StructDecl &decl,
+                                            ConstantStructBuilder &B)
+        : super(IGM, type, decl, B) {}
   };
 
 } // end anonymous namespace
@@ -3830,8 +3857,8 @@ void irgen::emitStructMetadata(IRGenModule &IGM, StructDecl *structDecl) {
                          init.finishAndCreateFuture());
 }
 
-void irgen::emitSpecializedGenericStructMetadata(IRGenModule &IGM,
-                                                 CanType type) {
+void irgen::emitSpecializedGenericStructMetadata(IRGenModule &IGM, CanType type,
+                                                 StructDecl &decl) {
   Type ty = type.getPointer();
   auto &context = type->getNominalOrBoundGenericNominal()->getASTContext();
   PrettyStackTraceType stackTraceRAII(
@@ -3842,7 +3869,6 @@ void irgen::emitSpecializedGenericStructMetadata(IRGenModule &IGM,
 
   bool isPattern = false;
 
-  auto &decl = *type.getStructOrBoundGenericStruct();
   SpecializedGenericStructMetadataBuilder builder(IGM, type, decl, init);
   builder.layout();
 
@@ -3873,9 +3899,13 @@ namespace {
   class EnumMetadataBuilderBase
          : public ValueMetadataBuilderBase<EnumMetadataVisitor<Impl>> {
     using super = ValueMetadataBuilderBase<EnumMetadataVisitor<Impl>>;
+    bool HasUnfilledPayloadSize = false;
 
   protected:
-    ConstantStructBuilder &B;
+    using ConstantBuilder = ConstantStructBuilder;
+    using NominalDecl = EnumDecl;
+    ConstantBuilder &B;
+    using super::asImpl;
     using super::IGM;
     using super::Target;
 
@@ -3896,8 +3926,12 @@ namespace {
       return irgen::emitValueWitnessTable(IGM, type, false, relativeReference);
     }
 
+    ConstantReference getValueWitnessTable(bool relativeReference) {
+      return emitValueWitnessTable(relativeReference);
+    }
+
     void addValueWitnessTable() {
-      B.add(emitValueWitnessTable(/*relative*/ false).getValue());
+      B.add(asImpl().getValueWitnessTable(false).getValue());
     }
 
     llvm::Constant *emitNominalTypeDescriptor() {
@@ -3906,8 +3940,12 @@ namespace {
       return descriptor;
     }
 
+    llvm::Constant *getNominalTypeDescriptor() {
+      return emitNominalTypeDescriptor();
+    }
+
     void addNominalTypeDescriptor() {
-      B.add(emitNominalTypeDescriptor());
+      B.add(asImpl().getNominalTypeDescriptor());
     }
 
     void addGenericArgument(GenericRequirement requirement) {
@@ -3917,16 +3955,22 @@ namespace {
     void addGenericWitnessTable(GenericRequirement requirement) {
       llvm_unreachable("Concrete type metadata cannot have generic requirements");
     }
-  };
 
-  class EnumMetadataBuilder
-    : public EnumMetadataBuilderBase<EnumMetadataBuilder> {
-    bool HasUnfilledPayloadSize = false;
+    bool hasTrailingFlags() {
+      return IGM.shouldPrespecializeGenericMetadata();
+    }
 
-  public:
-    EnumMetadataBuilder(IRGenModule &IGM, EnumDecl *theEnum,
-                        ConstantStructBuilder &B)
-      : EnumMetadataBuilderBase(IGM, theEnum, B) {}
+    void addTrailingFlags() {
+      auto flags = asImpl().getTrailingFlags();
+
+      B.addInt(IGM.Int64Ty, flags.getOpaqueValue());
+    }
+
+    MetadataTrailingFlags getTrailingFlags() {
+      MetadataTrailingFlags flags;
+
+      return flags;
+    }
 
     void addPayloadSize() {
       auto payloadSize = getConstantPayloadSize(IGM, Target);
@@ -3942,6 +3986,26 @@ namespace {
     bool canBeConstant() {
       return !HasUnfilledPayloadSize;
     }
+  };
+
+  class SpecializedGenericEnumMetadataBuilder
+      : public SpecializedGenericNominalMetadataBuilderBase<
+            EnumMetadataBuilderBase, SpecializedGenericEnumMetadataBuilder> {
+    using super = SpecializedGenericNominalMetadataBuilderBase<
+        EnumMetadataBuilderBase, SpecializedGenericEnumMetadataBuilder>;
+
+  public:
+    SpecializedGenericEnumMetadataBuilder(IRGenModule &IGM, CanType type,
+                                          EnumDecl &decl, ConstantBuilder &B)
+        : super(IGM, type, decl, B){};
+  };
+
+  class EnumMetadataBuilder
+      : public EnumMetadataBuilderBase<EnumMetadataBuilder> {
+  public:
+    EnumMetadataBuilder(IRGenModule &IGM, EnumDecl *theEnum,
+                        ConstantStructBuilder &B)
+        : EnumMetadataBuilderBase(IGM, theEnum, B) {}
 
     void createMetadataAccessFunction() {
       createNonGenericMetadataAccessFunction(IGM, Target);
@@ -4032,6 +4096,26 @@ void irgen::emitEnumMetadata(IRGenModule &IGM, EnumDecl *theEnum) {
   CanType declaredType = theEnum->getDeclaredType()->getCanonicalType();
 
   IGM.defineTypeMetadata(declaredType, isPattern, canBeConstant,
+                         init.finishAndCreateFuture());
+}
+
+void irgen::emitSpecializedGenericEnumMetadata(IRGenModule &IGM, CanType type,
+                                               EnumDecl &decl) {
+  Type ty = type.getPointer();
+  auto &context = type->getNominalOrBoundGenericNominal()->getASTContext();
+  PrettyStackTraceType stackTraceRAII(
+      context, "emitting prespecialized metadata for", ty);
+  ConstantInitBuilder initBuilder(IGM);
+  auto init = initBuilder.beginStruct();
+  init.setPacked(true);
+
+  bool isPattern = false;
+
+  SpecializedGenericEnumMetadataBuilder builder(IGM, type, decl, init);
+  builder.layout();
+
+  bool canBeConstant = builder.canBeConstant();
+  IGM.defineTypeMetadata(type, isPattern, canBeConstant,
                          init.finishAndCreateFuture());
 }
 
