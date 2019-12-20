@@ -19,11 +19,7 @@ func consume<T>(_ t: T) {
 }
 
 // CHECK: define hidden swiftcc void @"$s4main4doityyF"() #{{[0-9]+}} {
-// TODO: Once prespecialization is done for generic arguments which are 
-//       themselves generic (Outer<Inner<Int>>, here), a direct reference to
-//       the prespecialized metadata should be emitted here.
-// CHECK:  [[TYPE:%[0-9]+]] = call %swift.type* @__swift_instantiateConcreteTypeFromMangledName({ i32, i32 }* @"$s4main5OuterVyAA5InnerVySiGGMD") #11
-// CHECK:   call swiftcc void @"$s4main7consumeyyxlF"(%swift.opaque* noalias nocapture %{{[0-9]+}}, %swift.type* [[TYPE]])
+// CHECK: call swiftcc void @"$s4main5OuterV5firstACyxGx_tcfC"(%T4main5OuterV* noalias nocapture sret %{{[0-9]+}}, %swift.opaque* noalias nocapture %{{[0-9]+}}, %swift.type* getelementptr inbounds (%swift.full_type, %swift.full_type* bitcast (<{ i8**, [[INT]], %swift.type_descriptor*, %swift.type*, i32{{(, \[4 x i8\])?}}, i64 }>* @"$s4main5InnerVySiGMf" to %swift.full_type*), i32 0, i32 1))
 // CHECK: }
 func doit() {
   consume( Outer(first: Inner(first: 13)) )
@@ -34,6 +30,14 @@ doit()
 // CHECK: define hidden swiftcc %swift.metadata_response @"$s4main5OuterVMa"([[INT]], %swift.type*) #{{[0-9]+}} {
 // CHECK: entry:
 // CHECK:   [[ERASED_TYPE:%[0-9]+]] = bitcast %swift.type* %1 to i8*
-// CHECK:   {{%[0-9]+}} = call swiftcc %swift.metadata_response @__swift_instantiateGenericMetadata([[INT]] %0, i8* [[ERASED_TYPE]], i8* undef, i8* undef, %swift.type_descriptor* bitcast (<{ i32, i32, i32, i32, i32, i32, i32, i32, i32, i16, i16, i16, i16, i8, i8, i8, i8 }>* @"$s4main5OuterVMn" to %swift.type_descriptor*)) #{{[0-9]+}}
+// CHECK:   br label %[[TYPE_COMPARISON_LABEL:[0-9]+]]
+// CHECK: [[TYPE_COMPARISON_LABEL]]:
+// CHECK:   [[EQUAL_TYPE:%[0-9]+]] = icmp eq i8* bitcast (%swift.type* getelementptr inbounds (%swift.full_type, %swift.full_type* bitcast (<{ i8**, [[INT]], %swift.type_descriptor*, %swift.type*, i32{{(, \[4 x i8\])?}}, i64 }>* @"$s4main5InnerVySiGMf" to %swift.full_type*), i32 0, i32 1) to i8*), [[ERASED_TYPE]]
+// CHECK:   [[EQUAL_TYPES:%[0-9]+]] = and i1 true, [[EQUAL_TYPE]]
+// CHECK:   br i1 [[EQUAL_TYPES]], label %[[EXIT_PRESPECIALIZED:[0-9]+]], label %[[EXIT_NORMAL:[0-9]+]]
+// CHECK: [[EXIT_PRESPECIALIZED]]:
+// CHECK:   ret %swift.metadata_response { %swift.type* getelementptr inbounds (%swift.full_type, %swift.full_type* bitcast (<{ i8**, [[INT]], %swift.type_descriptor*, %swift.type*, i32{{(, \[4 x i8\])?}}, i64 }>* @"$s4main5OuterVyAA5InnerVySiGGMf" to %swift.full_type*), i32 0, i32 1), [[INT]] 0 }
+// CHECK: [[EXIT_NORMAL]]:
+// CHECK:   {{%[0-9]+}} = call swiftcc %swift.metadata_response @__swift_instantiateGenericMetadata([[INT]] %0, i8* %2, i8* undef, i8* undef, %swift.type_descriptor* bitcast (<{ i32, i32, i32, i32, i32, i32, i32, i32, i32, i16, i16, i16, i16, i8, i8, i8, i8 }>* @"$s4main5OuterVMn" to %swift.type_descriptor*)) #{{[0-9]+}}
 // CHECK:   ret %swift.metadata_response {{%[0-9]+}}
 // CHECK: }

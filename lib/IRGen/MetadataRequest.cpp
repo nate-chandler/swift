@@ -706,23 +706,10 @@ bool irgen::isNominalGenericContextTypeMetadataAccessTrivial(
                                            ResilienceExpansion::Minimal);
         });
     auto argument = ((Type *)parameter)->subst(substitutions);
-    auto genericArgument = argument->getAnyGeneric();
-    // For now, to avoid statically specializing generic protocol witness
-    // tables, don't statically specialize metadata for types any of whose
-    // arguments are generic.
-    //
-    // TODO: This is more pessimistic than necessary.  Specialize even in
-    //       the face of generic arguments so long as those arguments
-    //       aren't required to conform to any protocols.
-    //
-    // TODO: Once witness tables are statically specialized, check whether the
-    //       ConformanceInfo returns nullptr from tryGetConstantTable.
-    //       early return.
-    auto isGeneric = genericArgument && genericArgument->isGenericContext();
     auto isNominal = argument->getNominalOrBoundGenericNominal();
+    // TODO: Support existentials as arguments.
     auto isExistential = argument->isExistentialType();
-    return isNominal && !isGeneric && !isExistential &&
-           witnessTablesAreReferenceable &&
+    return isNominal && !isExistential && witnessTablesAreReferenceable &&
            irgen::isTypeMetadataAccessTrivial(IGM,
                                               argument->getCanonicalType());
   }) && IGM.getTypeInfoForUnlowered(type).isFixedSize(ResilienceExpansion::Maximal);

@@ -3774,23 +3774,14 @@ namespace {
 
     void addGenericWitnessTable(GenericRequirement requirement) {
       auto conformance = genericSubstitutions().lookupConformance(
-          requirement.TypeParameter->getCanonicalType(), requirement.Protocol);
+          requirement.TypeParameter,
+          requirement.Protocol
+      );
       ProtocolConformance *concreteConformance = conformance.getConcrete();
 
-      llvm::Constant *addr;
-
-      Type argument = requirement.TypeParameter.subst(genericSubstitutions());
-      auto argumentNominal = argument->getAnyNominal();
-      if (argumentNominal && argumentNominal->isGenericContext()) {
-        // TODO: Statically specialize the witness table pattern for t's
-        //       conformance.
-        llvm_unreachable("Statically specializing metadata at generic types is "
-                         "not supported.");
-      } else {
-        RootProtocolConformance *rootConformance =
-            concreteConformance->getRootConformance();
-        addr = IGM.getAddrOfWitnessTable(rootConformance);
-      }
+      RootProtocolConformance *rootConformance =
+          concreteConformance->getRootConformance();
+      auto *addr = IGM.getAddrOfWitnessTable(rootConformance);
 
       this->B.add(addr);
     }
