@@ -4395,7 +4395,9 @@ RValue SILGenFunction::emitApply(ResultPlanPtr &&resultPlan,
     // we left during the first pass.
     auto &completionArgSlot = const_cast<ManagedValue &>(args[completionIndex]);
 
-    completionArgSlot = resultPlan->emitForeignAsyncCompletionHandler(*this, loc);
+    auto resultType = calleeTypeInfo.origResultType->getType();
+    completionArgSlot =
+        resultPlan->emitForeignAsyncCompletionHandler(*this, resultType, loc);
 
   } else if (auto foreignError = calleeTypeInfo.foreign.error) {
     unsigned errorParamIndex =

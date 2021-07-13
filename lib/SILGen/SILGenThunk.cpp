@@ -188,12 +188,9 @@ static const clang::Type *prependParameterType(
   return clangCtx.getPointerType(newFnTy).getTypePtr();
 }
 
-SILFunction *
-SILGenModule::getOrCreateForeignAsyncCompletionHandlerImplFunction(
-                                         CanSILFunctionType blockType,
-                                         CanType continuationTy,
-                                         CanGenericSignature sig,
-                                         ForeignAsyncConvention convention) {
+SILFunction *SILGenModule::getOrCreateForeignAsyncCompletionHandlerImplFunction(
+    CanSILFunctionType blockType, CanType continuationTy, CanType resultType,
+    CanGenericSignature sig, ForeignAsyncConvention convention) {
   // Extract the result and error types from the continuation type.
   auto resumeType = cast<BoundGenericType>(continuationTy).getGenericArgs()[0];
 
@@ -214,7 +211,7 @@ SILGenModule::getOrCreateForeignAsyncCompletionHandlerImplFunction(
       getASTContext(),
       blockType->getClangTypeInfo().getType(),
       getASTContext().getClangTypeForIRGen(blockStorageTy));
-  
+
   auto implTy = SILFunctionType::get(sig,
          blockType->getExtInfo().intoBuilder()
            .withRepresentation(SILFunctionTypeRepresentation::CFunctionPointer)
@@ -358,15 +355,13 @@ SILGenModule::getOrCreateForeignAsyncCompletionHandlerImplFunction(
         auto resumeArgBuf = SGF.emitTemporaryAllocation(loc,
                                               loweredResumeTy.getAddressType());
 
-        auto prepareArgument = [&](SILValue destBuf, ManagedValue arg) {
+        auto prepareArgument = [&](SILValue destBuf, CanType destFormalType,
+                                   ManagedValue arg, CanType argFormalType) {
           // Convert the ObjC argument to the bridged Swift representation we
           // want.
-          ManagedValue bridgedArg = SGF.emitBridgedToNativeValue(loc,
-                                       arg.copy(SGF, loc),
-                                       arg.getType().getASTType(),
-                                       // FIXME: pass down formal type
-                                       destBuf->getType().getASTType(),
-                                       destBuf->getType().getObjectType());
+          ManagedValue bridgedArg = SGF.emitBridgedToNativeValue(
+              loc, arg.copy(SGF, loc), argFormalType, destFormalType,
+              destBuf->getType().getObjectType());
           // Force-unwrap an argument that comes to us as Optional if it's
           // formally non-optional in the return.
           if (bridgedArg.getType().getOptionalObjectType()
@@ -379,6 +374,7 @@ SILGenModule::getOrCreateForeignAsyncCompletionHandlerImplFunction(
         };
 
         if (auto resumeTuple = dyn_cast<TupleType>(resumeType)) {
+          auto resultTuple = cast<TupleType>(resultType);
           assert(params.size() == resumeTuple->getNumElements()
                                    + 1 + (bool)errorIndex + (bool)flagIndex);
           for (unsigned i : indices(resumeTuple.getElementTypes())) {
@@ -391,7 +387,11 @@ SILGenModule::getOrCreateForeignAsyncCompletionHandlerImplFunction(
             }
             auto resumeEltBuf = SGF.B.createTupleElementAddr(loc,
                                                              resumeArgBuf, i);
-            prepareArgument(resumeEltBuf, params[paramI + 1]);
+            prepareArgument(
+                resumeEltBuf,
+                F->mapTypeIntoContext(resumeTuple.getElementTypes()[i])
+                    ->getCanonicalType(),
+                params[paramI + 1], resultTuple.getElementTypes()[i]);
           }
         } else {
           assert(params.size() == 2 + (bool)errorIndex + (bool)flagIndex);
@@ -402,7 +402,9 @@ SILGenModule::getOrCreateForeignAsyncCompletionHandlerImplFunction(
           if (flagIndex && paramI >= *flagIndex) {
             ++paramI;
           }
-          prepareArgument(resumeArgBuf, params[paramI + 1]);
+          prepareArgument(resumeArgBuf,
+                          F->mapTypeIntoContext(resumeType)->getCanonicalType(),
+                          params[paramI + 1], resultType);
         }
         
         // Resume the continuation with the composed bridged result.

@@ -475,10 +475,10 @@ public:
                             SmallVectorImpl<SILValue> &outList) const override {
     // A foreign async function shouldn't have any indirect results.
   }
-  
-  ManagedValue
-  emitForeignAsyncCompletionHandler(SILGenFunction &SGF, SILLocation loc)
-  override {
+
+  ManagedValue emitForeignAsyncCompletionHandler(SILGenFunction &SGF,
+                                                 CanType resultType,
+                                                 SILLocation loc) override {
     // Get the current continuation for the task.
     bool throws = calleeTypeInfo.foreign.async
         ->completionHandlerErrorParamIndex().hasValue();
@@ -527,13 +527,12 @@ public:
     auto env = SGF.F.getGenericEnvironment();
     auto sig = env ? env->getGenericSignature()->getCanonicalSignature()
                    : CanGenericSignature();
-    SILFunction *impl = SGF.SGM
-      .getOrCreateForeignAsyncCompletionHandlerImplFunction(
-                  cast<SILFunctionType>(impFnTy->mapTypeOutOfContext()
-                                               ->getCanonicalType(sig)),
-                  continuationTy->mapTypeOutOfContext()->getCanonicalType(sig),
-                  sig,
-                  *calleeTypeInfo.foreign.async);
+    SILFunction *impl =
+        SGF.SGM.getOrCreateForeignAsyncCompletionHandlerImplFunction(
+            cast<SILFunctionType>(
+                impFnTy->mapTypeOutOfContext()->getCanonicalType(sig)),
+            continuationTy->mapTypeOutOfContext()->getCanonicalType(sig),
+            resultType, sig, *calleeTypeInfo.foreign.async);
     auto impRef = SGF.B.createFunctionRef(loc, impl);
     
     // Initialize the block object for the completion handler.
@@ -551,7 +550,7 @@ public:
     // _Block_copy-ing it.
     return ManagedValue::forUnmanaged(block);
   }
-  
+
   RValue finish(SILGenFunction &SGF, SILLocation loc, CanType substType,
                 ArrayRef<ManagedValue> &directResults) override {
     // There should be no direct results from the call.

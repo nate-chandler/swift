@@ -49,9 +49,10 @@ public:
   emitForeignErrorArgument(SILGenFunction &SGF, SILLocation loc) {
     return None;
   }
-  
-  virtual ManagedValue
-  emitForeignAsyncCompletionHandler(SILGenFunction &SGF, SILLocation loc) {
+
+  virtual ManagedValue emitForeignAsyncCompletionHandler(SILGenFunction &SGF,
+                                                         CanType resultType,
+                                                         SILLocation loc) {
     return {};
   }
 };
