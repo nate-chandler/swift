@@ -245,3 +245,19 @@ public protocol ReadableField {
   @_borrowed
   var field: Int { get }
 }
+
+// CHECK-LABEL: sil_default_witness_table MutatableAssociatedField {
+// CHECK-NEXT:    no_default
+// CHECK-NEXT:    no_default
+// CHECK-NEXT:    method #MutatableAssociatedField.field!read2
+// CHECK-SAME:        : @$s19coroutine_accessors24MutatableAssociatedFieldP5field5AssocQzvy
+// CHECK-NEXT:    no_default
+// CHECK-NEXT:    no_default
+// CHECK-NEXT:    method #MutatableAssociatedField.field!modify2
+// CHECK-SAME:        : @$s19coroutine_accessors24MutatableAssociatedFieldP5field5AssocQzvx
+// CHECK-NEXT:  }
+public protocol MutatableAssociatedField {
+  associatedtype Assoc
+
+  var field: Assoc { read set }
+}

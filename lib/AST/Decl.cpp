@@ -9605,6 +9605,9 @@ bool IsFunctionBodySkippedRequest::evaluate(
     // typecheck them.
     if (accessor->hasForcedStaticDispatch())
       return false;
+
+    if (accessor->isRequirementWithSynthesizedDefaultImplementation())
+      return false;
   }
 
   // Actor initializers need to be checked to determine delegation status.
